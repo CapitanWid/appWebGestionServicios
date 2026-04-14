@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VM Core Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+
+<body class="bg-slate-50 text-slate-800">
+
+<div class="container mx-auto p-6 max-w-6xl">
+    <div class="flex justify-between items-center mb-6">
+        <h1 class="text-2xl font-bold">VM Manager</h1>
+        <div id="status-badge" class="flex items-center bg-white px-4 py-2 rounded-full shadow-sm border">
+            <span class="text-sm font-medium mr-2">Estado del Servicio:</span>
+            <div id="status-dot" class="w-3 h-3 rounded-full bg-gray-400 mr-2"></div>
+            <span id="status-text" class="text-sm font-bold uppercase text-gray-500">Desconocido</span>
+        </div>
+    </div>
+
+    <form id="deployForm" enctype="multipart/form-data" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div>
+            <label class="block text-sm font-medium mb-1">Seleccionar VM Target</label>
+            <select name="vm_target" id="vm_select" class="w-full mb-3 border p-2 rounded bg-white shadow-sm"></select>
+            
+            <label class="block text-sm font-medium mb-1">Archivo .zip</label>
+            <input type="file" name="appZip" required class="w-full mb-3 text-sm">
+            
+            <label class="block text-sm font-medium mb-1">Ruta Destino</label>
+            <input type="text" name="destination" placeholder="/home/wid/app" required class="w-full mb-3 border p-2 rounded">
+            
+            <label class="block text-sm font-medium mb-1">Nombre del Servicio</label>
+            <input type="text" name="serviceName" id="serviceName" placeholder="loguero" required class="w-full mb-3 border p-2 rounded">
+
+            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold p-3 rounded transition shadow-lg">
+                <i class="fa-solid fa-rocket mr-2"></i> Desplegar
+            </button>
+        </div>
+
+        <div class="lg:col-span-2">
+            <div class="grid grid-cols-5 gap-2 mb-4">
+                <button type="button" onclick="control('start')" class="bg-blue-100 hover:bg-blue-200 p-2 rounded font-semibold text-blue-700 transition text-xs">Start</button>
+                <button type="button" onclick="control('restart')" class="bg-yellow-100 hover:bg-yellow-200 p-2 rounded font-semibold text-yellow-700 transition text-xs">Restart</button>
+                <button type="button" onclick="control('stop')" class="bg-red-100 hover:bg-red-200 p-2 rounded font-semibold text-red-700 transition text-xs">Stop</button>
+                <button type="button" onclick="control('enable')" class="bg-green-100 hover:bg-green-200 p-2 rounded font-semibold text-green-700 transition text-xs">Enable</button>
+                <button type="button" onclick="control('disable')" class="bg-gray-200 hover:bg-gray-300 p-2 rounded font-semibold text-gray-700 transition text-xs">Disable</button>
+            </div>
+
+            <div class="flex items-center mb-2 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                <i class="fa-solid fa-terminal mr-2"></i> Consola y Logs (tail -f)
+            </div>
+            
+            <div id="log-container" class="bg-black text-green-400 p-4 h-80 overflow-y-auto font-mono text-sm rounded shadow-inner border border-slate-700">
+                <div id="action-messages">
+                    <p class="text-slate-500">> Sistema listo...</p>
+                </div>
+                <hr class="border-slate-800 my-2">
+                <div id="live-logs" class="text-green-500">
+                    </div>
+            </div>
+        </div>
+    </form>
+</div>
+
+<script>
+    const logContainer = document.getElementById("log-container");
+
+    // Función para imprimir mensajes de acciones (Botones)
+    function logAction(msg, error = false) {
+        const actionDiv = document.getElementById("action-messages");
+        const p = document.createElement("p");
+        p.textContent = `> ${msg}`;
+        p.className = error ? "text-red-400" : "text-blue-400";
+        actionDiv.appendChild(p);
+        
+        // Mantener solo los últimos 5 mensajes de acción
+        if (actionDiv.children.length > 5) actionDiv.removeChild(actionDiv.firstChild);
+        logContainer.scrollTop = logContainer.scrollHeight;
+    }
+
+    // Monitoreo constante de Status y Logs
+    async function updateDashboard() {
+        const service = document.getElementById('serviceName').value;
+        const vm = document.getElementById('vm_select').value;
+        if (!service || !vm) return;
+
+        try {
+            // 1. Actualizar Status
+            const resStatus = await fetch(`/api/status?service=${service}&vm=${vm}`);
+            const status = await resStatus.text();
+            const dot = document.getElementById('status-dot');
+            const text = document.getElementById('status-text');
+
+            if (status.trim() === "active") {
+                dot.className = "w-3 h-3 rounded-full bg-green-500 animate-pulse mr-2";
+                text.textContent = "Activo";
+                text.className = "text-sm font-bold uppercase text-green-600";
+            } else {
+                dot.className = "w-3 h-3 rounded-full bg-red-500 mr-2";
+                text.textContent = "Inactivo";
+                text.className = "text-sm font-bold uppercase text-red-600";
+            }
+
+            // 2. Actualizar Logs (tail -f)
+            const resLogs = await fetch(`/api/logs?service=${service}&vm=${vm}`);
+            const logs = await resLogs.text();
+            const liveDiv = document.getElementById('live-logs');
+            
+            if (logs.trim() !== "" && !logs.includes("Error")) {
+                liveDiv.innerHTML = logs.split("\n").map(l => `<div>[LIVE] ${l}</div>`).join("");
+            }
+        } catch (err) { console.error("Error update:", err); }
+    }
+
+    // Control de servicios (systemctl)
+    async function control(action) {
+        const service = document.getElementById('serviceName').value;
+        const vm = document.getElementById('vm_select').value;
+        
+        if (!service) return logAction("Escribe el nombre del servicio", true);
+
+        logAction(`Ejecutando ${action.toUpperCase()}...`);
+        
+        try {
+            const res = await fetch(`/service-control?action=${action}&service=${service}&vm=${vm}`);
+            const text = await res.text();
+            if (res.ok) logAction(`Comando ${action} completado.`);
+            else logAction(`Error: ${text}`, true);
+        } catch (err) { logAction(`Error de red: ${err.message}`, true); }
+    }
+
+    // Despliegue de archivo
+    document.getElementById("deployForm").addEventListener("submit", async function(e) {
+        e.preventDefault();
+        logAction("Iniciando despliegue remoto...");
+        try {
+            const res = await fetch("/deploy", { method: "POST", body: new FormData(this) });
+            const text = await res.text();
+            logAction(text, !res.ok);
+        } catch (err) { logAction(err.message, true); }
+    });
+
+    // Carga inicial de VMs
+    async function loadVMs() {
+        const select = document.getElementById('vm_select');
+        try {
+            const res = await fetch('/api/vms');
+            const vms = await res.json();
+            select.innerHTML = vms.map(vm => `<option value="${vm.name}">${vm.name}</option>`).join("");
+            logAction("Lista de VMs cargada.");
+        } catch (err) { logAction("No se pudieron cargar las VMs", true); }
+    }
+
+    setInterval(updateDashboard, 2000);
+    window.onload = loadVMs;
+</script>
+</body>
+</html>
